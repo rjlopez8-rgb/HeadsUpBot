@@ -36,7 +36,12 @@ STRONG = ["eq_basic", "eq_tight", "eq_loose_aggr", "eq_modeling", "eq_slow", "ex
 
 
 def make(spec: str):
+    """Optional '@<precision>' suffix sets the Monte Carlo precision multiplier."""
     from hero import Hero, Params
+    prec = None
+    if "@" in spec:
+        spec, p = spec.rsplit("@", 1)
+        prec = float(p)
     kind, _, arg = spec.partition(":")
     if kind == "hero":
         if arg:
@@ -48,7 +53,7 @@ def make(spec: str):
         from solverbot import SolverBot
         path = arg or os.path.join(os.path.dirname(_HERE), "data", "strategy.npz")
         ex = kind == "solverX"
-        return lambda: SolverBot(path, exploit=ex)
+        return lambda: SolverBot(path, exploit=ex, precision=prec)
     if kind == "hybrid":
         from solverbot import Hybrid
         path = arg or os.path.join(os.path.dirname(_HERE), "data", "strategy.npz")
@@ -56,7 +61,7 @@ def make(spec: str):
     if kind == "hybridX":
         from solverbot import HybridX
         path = arg or os.path.join(os.path.dirname(_HERE), "data", "strategy.npz")
-        return lambda: HybridX(path)
+        return lambda: HybridX(path, precision=prec)
     if kind == "file":
         return load_agent_file(arg)
     raise ValueError(spec)

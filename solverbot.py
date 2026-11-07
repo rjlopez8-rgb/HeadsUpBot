@@ -68,19 +68,24 @@ class Blueprint:
 # We aim for TIME_TARGET (a quarter of the bank) and degrade in steps if the
 # machine is slow: fewer Monte Carlo samples -> slightly noisier buckets, but
 # never an empty time bank. Typical use on a normal core is ~1.3 s per half.
-TIME_TARGET = 2.0
-HARD_CAP = 5.0          # past this, use the bare minimum of samples
+TIME_TARGET = float(os.environ.get("SOLVERBOT_TIME_TARGET", "2.5"))
+HARD_CAP = max(5.0, TIME_TARGET * 2.5)   # past this, use the bare minimum of samples
+
+
+def budget_fraction(used: float, hand_index: int) -> float:
+    """Share of the full sample count we can afford right now (1, .5, .25, .1)."""
+    pace = TIME_TARGET * (hand_index + 1) / 1000.0
+    if used > HARD_CAP:
+        return 0.1
+    if used > 1.5 * pace:
+        return 0.25
+    if used > pace:
+        return 0.5
+    return 1.0
 
 
 def samples_for(base: int, used: float, hand_index: int) -> int:
-    pace = TIME_TARGET * (hand_index + 1) / 1000.0
-    if used > HARD_CAP:
-        return 16
-    if used > 1.5 * pace:
-        return 32
-    if used > pace:
-        return max(48, base // 2)
-    return base
+    return max(16, int(base * budget_fraction(used, hand_index)))
 
 
 OVERHEAD_PER_CALL = 0.0004   # judge also charges HTTP/JSON handling we can't time
@@ -117,8 +122,10 @@ class XParams:
 
 class SolverBot:
     def __init__(self, path: str = DEFAULT_STRATEGY, xp: XParams | None = None, exploit: bool = True,
-                 fold_exploit: bool = True):
+                 fold_exploit: bool = True, precision: float | None = None):
         self.bp = load_blueprint(path)
+        # multiplier on all Monte Carlo sample counts (1 = training estimator)
+        self.precision = precision if precision is not None else float(os.environ.get("SOLVERBOT_PRECISION", "4"))
         self.xp = xp or XParams()
         self.exploit = exploit              # blueprint tweaks vs extreme opponents
         self.fold_exploit = fold_exploit    # raise everything vs check/fold bots
@@ -164,14 +171,15 @@ class SolverBot:
         if int(self.bp.players[j]) != me:
             raise ValueError("player mismatch")
         st = int(obs.street)
-        n = samples_for(K_SAMPLES[st], charged_estimate(m), obs.hand_index)
+        f = budget_fraction(charged_estimate(m), obs.hand_index) * self.precision
+        n = max(16, int(K_SAMPLES[st] * f))
         if self.bp.feature == "h2" and st in (1, 2):
             # one E[HS^2] pass gives both E[HS] (for overrides) and the bucket feature
-            R = H2_RUNOUTS if n >= 96 else 8
+            side = max(8, int(round(16 * f ** 0.5)))
             h = np.asarray(obs.hole_cards, dtype=np.int64)[None, :]
             board = np.zeros((1, 5), dtype=np.int64)
             board[0, :len(obs.board)] = obs.board
-            ehs, ehs2 = batch_ehs2(h, board, len(obs.board), rng, R, H2_OPPS)
+            ehs, ehs2 = batch_ehs2(h, board, len(obs.board), rng, side, side)
             e, feat = float(ehs[0]), float(ehs2[0])
         elif st == 0:
             e = self.bp.preflop_eq(obs.hole_cards)
