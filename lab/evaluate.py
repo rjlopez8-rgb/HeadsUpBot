@@ -10,6 +10,7 @@ Candidate syntax:
     hero:<champion.json>    hero.py with tuned Params
     solver:<npz>            blueprint only (no exploit layer)
     solverX:<npz>           blueprint + exploit layer
+    hybrid:<npz>            blueprint, switching to hero-style exploitation vs non-equilibrium opponents
     file:<agent.py>         any agent.py-style file
 Every candidate also plays every other candidate.
 """
@@ -30,6 +31,7 @@ import pool as poolmod  # noqa: E402
 from sim import load_agent_file  # noqa: E402
 
 STRONG = ["eq_basic", "eq_tight", "eq_loose_aggr", "eq_modeling", "eq_slow", "exploiter",
+          "guide_example", "official_mc", "official_mc_fast",
           "check_raiser", "river_bluffer", "pf_shover", "maniac", "station", "checkfold"]
 
 
@@ -47,6 +49,10 @@ def make(spec: str):
         path = arg or os.path.join(os.path.dirname(_HERE), "data", "strategy.npz")
         ex = kind == "solverX"
         return lambda: SolverBot(path, exploit=ex)
+    if kind == "hybrid":
+        from solverbot import Hybrid
+        path = arg or os.path.join(os.path.dirname(_HERE), "data", "strategy.npz")
+        return lambda: Hybrid(path)
     if kind == "file":
         return load_agent_file(arg)
     raise ValueError(spec)

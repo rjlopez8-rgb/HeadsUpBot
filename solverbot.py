@@ -179,3 +179,61 @@ class SolverBot:
             if e >= odds and rng.random() < xp.call_light:
                 return C
         return a
+
+
+# ------------------------------------------------------------------ hybrid
+# Opponent "fingerprint" of the blueprint itself (measured in self-play):
+# preflop raise rate, postflop raise rate, how often it folds to our bets.
+EQ_PROFILE = (0.47, 0.39, 0.41)
+
+
+@dataclass
+class HParams:
+    decide_at: int = 100          # hands of blueprint play before the first decision
+    recheck_every: int = 150
+    d_hi: float = 0.13            # deviation above this -> exploit (hero mode)
+    d_lo: float = 0.08            # deviation below this -> back to blueprint
+    w_pre: float = 1.0
+    w_post: float = 1.0
+    w_fold: float = 1.0
+
+
+class Hybrid(SolverBot):
+    """Blueprint by default; hero-style exploitation once the opponent's
+    statistics are clearly far from equilibrium play."""
+
+    def __init__(self, path: str = DEFAULT_STRATEGY, hp: HParams | None = None,
+                 hero_params: Params | None = None, **kw):
+        super().__init__(path, **kw)
+        self.hp = hp or HParams()
+        if hero_params is not None:
+            self.fallback = Hero(hero_params)
+
+    def new_half(self, config, m):
+        super().new_half(config, m)
+        m["mode"] = "bp"
+        m["next_check"] = self.hp.decide_at
+        m["mode_log"] = []
+
+    def deviation(self, m) -> float:
+        hp = self.hp
+        pre = m["opp_aggr"][0] / max(1, m["opp_acts"][0])
+        post = m["opp_aggr"][1] / max(1, m["opp_acts"][1])
+        log = m["bet_log"]
+        fold = sum(log) / max(1, len(log))
+        e = EQ_PROFILE
+        return (hp.w_pre * abs(pre - e[0]) + hp.w_post * abs(post - e[1]) + hp.w_fold * abs(fold - e[2])) / \
+            (hp.w_pre + hp.w_post + hp.w_fold)
+
+    def _decide(self, obs, m):
+        if obs.hand_index >= m["next_check"] and m["cur_hand"] != obs.hand_index:
+            d = self.deviation(m)
+            if m["mode"] == "bp" and d > self.hp.d_hi:
+                m["mode"] = "hero"
+            elif m["mode"] == "hero" and d < self.hp.d_lo:
+                m["mode"] = "bp"
+            m["mode_log"].append((obs.hand_index, round(d, 3), m["mode"]))
+            m["next_check"] = obs.hand_index + self.hp.recheck_every
+        if m["mode"] == "hero":
+            return self.fallback._decide(obs, m)       # tracks stats itself
+        return super()._decide(obs, m)

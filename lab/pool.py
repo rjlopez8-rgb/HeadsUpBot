@@ -246,6 +246,74 @@ class Exploiter(Base):
         return C if e >= odds - light else F
 
 
+# ------------------------------------------------- "LLM straight from the guide"
+class GuideExample(Base):
+    """The example strategy printed in the participant guide (section 4.1)."""
+
+    def choose_action(self, obs, m):
+        from evaluator import FLUSH, omaha_score
+        if obs.street != Street.RIVER:
+            if obs.to_call <= obs.big_blind:
+                return C
+            if F in obs.legal_actions:
+                return F
+            return C
+        score = omaha_score(obs.hole_cards, obs.board)
+        if score >= (FLUSH << 20) and RP in obs.legal_actions:
+            return RP
+        return C
+
+
+class OfficialMC(Base):
+    """Typical LLM bot following the guide's tips literally: Monte Carlo with
+    the OFFICIAL evaluator.omaha_score (slow), pot odds, preflop features.
+    With sims=150 it burns ~8 ms per decision -> its time bank runs out."""
+
+    def __init__(self, sims=150, seed=11, raise_eq=0.68, bet_eq=0.62):
+        self.sims, self.seed, self.raise_eq, self.bet_eq = sims, seed, raise_eq, bet_eq
+
+    def new_half(self, config, m):
+        import random
+        m["r"] = random.Random(self.seed)
+
+    def _eq(self, obs, m):
+        from evaluator import omaha_score
+        r = m["r"]
+        dead = set(obs.hole_cards) | set(obs.board)
+        deck = [c for c in range(36) if c not in dead]
+        need = 5 - len(obs.board)
+        win = 0.0
+        for _ in range(self.sims):
+            d = r.sample(deck, 5 + need)
+            board = list(obs.board) + d[5:]
+            a, b = omaha_score(obs.hole_cards, board), omaha_score(d[:5], board)
+            win += 1.0 if a > b else 0.5 if a == b else 0.0
+        return win / self.sims
+
+    def _preflop(self, obs):
+        ranks = [c >> 2 for c in obs.hole_cards]
+        suits = [c & 3 for c in obs.hole_cards]
+        score = sum(ranks) / 40 + 0.15 * (len(ranks) - len(set(ranks))) + \
+            0.1 * sum(1 for s in set(suits) if suits.count(s) >= 2)
+        return score
+
+    def choose_action(self, obs, m):
+        if obs.street == Street.PREFLOP:
+            s = self._preflop(obs)
+            if s > 0.75:
+                return _pick(obs, RP, C)
+            if s > 0.45 or obs.to_call <= obs.big_blind:
+                return C
+            return F if obs.to_call > 0 else C
+        e = self._eq(obs, m)
+        if obs.to_call == 0:
+            return _pick(obs, RH, C) if e > self.bet_eq else C
+        odds = obs.to_call / (obs.pot + obs.to_call)
+        if e > self.raise_eq:
+            return _pick(obs, RP, RH, C)
+        return C if e > odds else F
+
+
 SIMPLE = {
     "random": Random, "checkfold": CheckFold, "station": Station,
     "always_pot": AlwaysPot, "always_half": AlwaysHalf, "maniac": Maniac,
@@ -256,6 +324,9 @@ AI_TYPICAL = {
     "eq_loose_aggr": lambda: EquityBot(raise_eq=0.55, pot_eq=0.70, margin=-0.05, bet_eq=0.50, bluff=0.15, seed=3),
     "eq_modeling": lambda: ModelingEquityBot(seed=4),
     "eq_slow": lambda: SlowEquityBot(seed=5),
+    "guide_example": GuideExample,
+    "official_mc": lambda: OfficialMC(),
+    "official_mc_fast": lambda: OfficialMC(sims=40, seed=12),
 }
 WEIRD = {
     "check_raiser": lambda: CheckRaiser(seed=6),
