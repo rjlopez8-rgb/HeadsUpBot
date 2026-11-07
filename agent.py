@@ -42,14 +42,15 @@ fasteval.load()  # 18 MB pair x triple score table
 
 # rename as your team/bot's name
 PARTICIPANT = "HeadsUpBot"
-AGENT_NAME = "hero-v1"
+AGENT_NAME = "solver-v1"
 
 
 # ===== YOUR CODE HERE =====
-# All strategy lives in hero.py (tunable Params); fast math in pokerlib.py / fasteval.py.
-from hero import Hero, Params
+# Strategy: CFR+ blueprint (data/strategy.npz) + exploit layer (solverbot.py),
+# falling back to hero.py on anything unexpected. Fast math: pokerlib/fasteval.
+from solverbot import SolverBot
 
-BOT = Hero(Params())
+BOT = SolverBot()   # loads data/strategy.npz at startup (not charged to the time bank)
 
 
 def new_half(config: AgentConfig, memory: dict) -> None:
@@ -58,7 +59,7 @@ def new_half(config: AgentConfig, memory: dict) -> None:
 
 
 def choose_action(obs: Observation, memory: dict) -> Action:
-    """Never raises: hero.Hero.choose_action has its own safe fallback."""
+    """Never raises: SolverBot has its own fallbacks."""
     try:
         return BOT.choose_action(obs, memory)
     except Exception:
