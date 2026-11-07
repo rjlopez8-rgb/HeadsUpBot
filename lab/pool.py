@@ -335,3 +335,50 @@ WEIRD = {
     "exploiter": Exploiter,
 }
 POOL = {**SIMPLE, **AI_TYPICAL, **WEIRD}
+
+
+# ------------------------------------------------- attackers aimed at our rules
+class RareBluffer(Base):
+    """Looks passive (raises rarely) so a range-reader thinks its raises are
+    strong - but it raises ONLY with weak hands. Calls most bets otherwise."""
+
+    def __init__(self, bluff_p=0.18, seed=21):
+        self.bluff_p, self.seed = bluff_p, seed
+
+    def choose_action(self, obs, m):
+        rng = m["rng"]
+        e = pl.equity(obs.hole_cards, obs.board, 120, rng)
+        if e < 0.35 and rng.random() < self.bluff_p:
+            return _pick(obs, RP, RH, C)
+        if obs.to_call == 0:
+            return C
+        odds = obs.to_call / (obs.pot + obs.to_call)
+        return C if e >= odds - 0.05 else F
+
+
+class SkewedSolver(Base):
+    """Our own blueprint, skewed: with prob `aggro` turns checks/calls into
+    raises, with prob `passive` turns raises into checks/calls. Plays close to
+    equilibrium but with a systematic lean - a 'strong team' proxy."""
+
+    def __init__(self, path, aggro=0.0, passive=0.0, seed=31):
+        self.path, self.aggro, self.passive, self.seed = path, aggro, passive, seed
+        self.inner = None
+
+    def new_half(self, config, m):
+        from solverbot import SolverBot
+        self.inner = SolverBot(self.path, exploit=False, fold_exploit=False)
+        self.inner.new_half(config, m)
+        m["skew_rng"] = np.random.default_rng(self.seed)
+
+    def on_hand_end(self, result, m):
+        self.inner.on_hand_end(result, m)
+
+    def choose_action(self, obs, m):
+        a = self.inner.choose_action(obs, m)
+        r = m["skew_rng"].random()
+        if a == C and r < self.aggro and (RH in obs.legal_actions or RP in obs.legal_actions):
+            return _pick(obs, RH, RP)
+        if a in (RH, RP) and r < self.passive:
+            return C
+        return a

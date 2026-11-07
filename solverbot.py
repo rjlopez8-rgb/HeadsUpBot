@@ -46,6 +46,15 @@ class Blueprint:
         self.players = z["players"]
         self.index = {k: j for j, k in enumerate(z["keys"].tolist())}
         self.feature = str(z["feature"]) if "feature" in z.files else "hs"
+        # a blueprint may ship its own preflop table (the one it was trained with):
+        # <strategy>.preflop.npy next to the strategy file; else the global table
+        pf = path.replace(".npz", ".preflop.npy")
+        self.preflop = np.load(pf) if os.path.exists(pf) else None
+
+    def preflop_eq(self, hole) -> float:
+        if self.preflop is not None:
+            return float(self.preflop[pl.colex(np.asarray(hole))])
+        return float(pl.preflop_eq(np.asarray(hole)))
 
     def node(self, history) -> int:
         return self.index.get(repr(tuple(int(a.action) for a in history)), -1)
@@ -164,6 +173,9 @@ class SolverBot:
             board[0, :len(obs.board)] = obs.board
             ehs, ehs2 = batch_ehs2(h, board, len(obs.board), rng, R, H2_OPPS)
             e, feat = float(ehs[0]), float(ehs2[0])
+        elif st == 0:
+            e = self.bp.preflop_eq(obs.hole_cards)
+            feat = e
         else:
             e = pl.equity(obs.hole_cards, obs.board, n, rng)
             feat = self.feature(st, e, obs, m, n)

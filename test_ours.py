@@ -36,7 +36,7 @@ def test_preflop_table_close_to_monte_carlo():
     for _ in range(5):
         h = np.array([sorted(r.sample(range(36), 5))])
         mc = batch_equity(h, np.zeros((1, 5), dtype=np.int64), 0, 4000, rng)[0]
-        assert abs(pl.preflop_eq(h[0]) - mc) < 0.1
+        assert abs(pl.preflop_eq(h[0]) - mc) < 0.04
 
 
 def test_bot_plays_cleanly_and_fast():
