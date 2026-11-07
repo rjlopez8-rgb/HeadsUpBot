@@ -42,15 +42,16 @@ fasteval.load()  # 18 MB pair x triple score table
 
 # rename as your team/bot's name
 PARTICIPANT = "HeadsUpBot"
-AGENT_NAME = "solver-v1"
+AGENT_NAME = "hybrid-v2"
 
 
 # ===== YOUR CODE HERE =====
-# Strategy: CFR+ blueprint (data/strategy.npz) + exploit layer (solverbot.py),
-# falling back to hero.py on anything unexpected. Fast math: pokerlib/fasteval.
-from solverbot import SolverBot
+# Strategy (solverbot.Hybrid): CFR+ blueprint (data/strategy.npz) by default;
+# switches to hero.py's exploitative play once the opponent's statistics are
+# clearly far from equilibrium. Falls back to hero.py on anything unexpected.
+from solverbot import Hybrid
 
-BOT = SolverBot()   # loads data/strategy.npz at startup (not charged to the time bank)
+BOT = Hybrid()   # loads data/strategy.npz at startup (not charged to the time bank)
 
 
 def new_half(config: AgentConfig, memory: dict) -> None:

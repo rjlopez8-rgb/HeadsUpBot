@@ -95,10 +95,12 @@ class XParams:
 
 
 class SolverBot:
-    def __init__(self, path: str = DEFAULT_STRATEGY, xp: XParams | None = None, exploit: bool = True):
+    def __init__(self, path: str = DEFAULT_STRATEGY, xp: XParams | None = None, exploit: bool = True,
+                 fold_exploit: bool = True):
         self.bp = load_blueprint(path)
         self.xp = xp or XParams()
-        self.exploit = exploit
+        self.exploit = exploit              # blueprint tweaks vs extreme opponents
+        self.fold_exploit = fold_exploit    # raise everything vs check/fold bots
         self.fallback = Hero(Params())
 
     def new_half(self, config, m):
@@ -137,7 +139,7 @@ class SolverBot:
         can_raise = RH in legal or RP in legal
         xp = self.xp
 
-        if self.exploit and can_raise and self.fallback._exploit_mode(m):
+        if (self.exploit or self.fold_exploit) and can_raise and self.fallback._exploit_mode(m):
             return RH if RH in legal else RP
 
         j = self.bp.node(obs.action_history)
@@ -203,8 +205,9 @@ class Hybrid(SolverBot):
     statistics are clearly far from equilibrium play."""
 
     def __init__(self, path: str = DEFAULT_STRATEGY, hp: HParams | None = None,
-                 hero_params: Params | None = None, **kw):
-        super().__init__(path, **kw)
+                 hero_params: Params | None = None, exploit: bool = False, **kw):
+        # balanced mode = pure blueprint (+ the check/fold-bot exploit only)
+        super().__init__(path, exploit=exploit, **kw)
         self.hp = hp or HParams()
         if hero_params is not None:
             self.fallback = Hero(hero_params)

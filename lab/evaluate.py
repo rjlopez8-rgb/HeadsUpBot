@@ -65,6 +65,8 @@ if __name__ == "__main__":
     ap.add_argument("--seeds", type=int, default=1)
     ap.add_argument("--opps", default="strong")
     ap.add_argument("--extra", nargs="*", default=[])
+    ap.add_argument("--opp-specs", nargs="*", default=[], help="extra opponents in candidate syntax")
+    ap.add_argument("--no-rr", action="store_true", help="skip candidate-vs-candidate matches")
     a = ap.parse_args()
     cands = {c: make(c) for c in a.cands}
     opps = {}
@@ -75,6 +77,9 @@ if __name__ == "__main__":
     for path in a.extra:
         f = load_agent_file(path)
         opps["x:" + f.__name__] = f
-    for c in a.cands:                     # round robin between candidates
-        opps["vs:" + c] = cands[c]
+    for spec in a.opp_specs:
+        opps["opp:" + spec] = make(spec)
+    if not a.no_rr:
+        for c in a.cands:                 # round robin between candidates
+            opps["vs:" + c] = cands[c]
     league.run(cands, opps, [f"ev{i}" for i in range(a.seeds)], a.deals)
