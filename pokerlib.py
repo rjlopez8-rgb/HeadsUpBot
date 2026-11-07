@@ -32,7 +32,8 @@ from math import comb as _comb  # noqa: E402
 import os as _os  # noqa: E402
 _COMB = np.array([[_comb(c, k) for k in range(6)] for c in range(36)], dtype=np.int64)
 try:
-    PREFLOP_EQ = np.load(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "preflop_eq.npy"))
+    PREFLOP_EQ = np.load(_os.environ.get("PREFLOP_TABLE") or
+                         _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "preflop_eq.npy"))
 except Exception:  # noqa: BLE001
     PREFLOP_EQ = None
 

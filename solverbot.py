@@ -74,6 +74,15 @@ def samples_for(base: int, used: float, hand_index: int) -> int:
     return base
 
 
+OVERHEAD_PER_CALL = 0.0004   # judge also charges HTTP/JSON handling we can't time
+
+
+def charged_estimate(m) -> float:
+    """Our thinking time plus an estimate of the per-request overhead the
+    judge charges (it times the whole request, minus a 1 ms grace)."""
+    return m.get("sb_t", 0.0) + OVERHEAD_PER_CALL * m.get("calls", 0)
+
+
 _CACHE: dict = {}
 
 
@@ -131,6 +140,7 @@ class SolverBot:
             if a not in obs.legal_actions:
                 a = C
         m["sb_t"] = m.get("sb_t", 0.0) + time.perf_counter() - t0
+        m["calls"] = m.get("calls", 0) + 1
         if a in AGGR:
             m["we_bet_last"] = True
         return a
@@ -145,9 +155,19 @@ class SolverBot:
         if int(self.bp.players[j]) != me:
             raise ValueError("player mismatch")
         st = int(obs.street)
-        n = samples_for(K_SAMPLES[st], m.get("sb_t", 0.0), obs.hand_index)
-        e = pl.equity(obs.hole_cards, obs.board, n, rng)
-        b = self.bp.bucket(st, self.feature(st, e, obs, m, n))
+        n = samples_for(K_SAMPLES[st], charged_estimate(m), obs.hand_index)
+        if self.bp.feature == "h2" and st in (1, 2):
+            # one E[HS^2] pass gives both E[HS] (for overrides) and the bucket feature
+            R = H2_RUNOUTS if n >= 96 else 8
+            h = np.asarray(obs.hole_cards, dtype=np.int64)[None, :]
+            board = np.zeros((1, 5), dtype=np.int64)
+            board[0, :len(obs.board)] = obs.board
+            ehs, ehs2 = batch_ehs2(h, board, len(obs.board), rng, R, H2_OPPS)
+            e, feat = float(ehs[0]), float(ehs2[0])
+        else:
+            e = pl.equity(obs.hole_cards, obs.board, n, rng)
+            feat = self.feature(st, e, obs, m, n)
+        b = self.bp.bucket(st, feat)
         probs = self.bp.strategy[j, b].astype(np.float64).copy()
         mask = np.zeros(4)
         for a in obs.legal_actions:
@@ -276,6 +296,10 @@ class OParams:
     value_eq: float = 0.62        # R2: bet for value vs callers from this equity
     bluff_scale: float = 1.2      # R3: extra bluff prob per unit of excess fold rate
     loose_ratio: float = 1.35     # R4 active if opp aggression > loose_ratio * equilibrium
+    r1: bool = True               # fold more vs honest/tight aggressors
+    r2: bool = True               # no bluffs + thin value vs calling stations
+    r3: bool = True               # bluff over-folders
+    r4: bool = False              # call down maniacs: OFF - red team showed aggressive bots exploit it
 
 
 class HybridX(Hybrid):
@@ -321,7 +345,7 @@ class HybridX(Hybrid):
         weak = b < op.weak_frac * self.bp.K
         if facing and opp_raised:
             odds = obs.to_call / (obs.pot + obs.to_call)
-            if aggr < op.tight_ratio * a_eq and a != F:
+            if op.r1 and aggr < op.tight_ratio * a_eq and a != F:
                 # R1: honest/tight aggressor - check our equity vs its real range
                 keep = min(1.0, max(op.range_min, aggr * op.range_k))
                 er = pl.equity(obs.hole_cards, obs.board, 160, rng, keep)
@@ -329,14 +353,14 @@ class HybridX(Hybrid):
                     return F
                 if a in AGGR and er < 0.5:
                     return C
-            if aggr > op.loose_ratio * a_eq and a == F and e >= odds:
+            if op.r4 and aggr > op.loose_ratio * a_eq and a == F and e >= odds:
                 return C                                   # R4: call down a maniac
-        if a in AGGR and weak and fold_rate < f_eq - op.fold_gap:
+        if op.r2 and a in AGGR and weak and fold_rate < f_eq - op.fold_gap:
             return C                                       # R2: no bluffs vs callers
-        if (a == C and not facing and can_raise and fold_rate < f_eq - op.fold_gap
+        if (op.r2 and a == C and not facing and can_raise and fold_rate < f_eq - op.fold_gap
                 and e >= op.value_eq):
             return RH if RH in legal else RP               # R2: thin value vs callers
-        if (a == C and not facing and can_raise and fold_rate > f_eq + op.fold_gap
+        if (op.r3 and a == C and not facing and can_raise and fold_rate > f_eq + op.fold_gap
                 and rng.random() < op.bluff_scale * (fold_rate - f_eq - op.fold_gap)):
             return RH if RH in legal else RP               # R3: bluff over-folders
         return a
