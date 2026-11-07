@@ -42,16 +42,18 @@ fasteval.load()  # 18 MB pair x triple score table
 
 # rename as your team/bot's name
 PARTICIPANT = "HeadsUpBot"
-AGENT_NAME = "hybrid-v2"
+AGENT_NAME = "hybridX-v3"
 
 
 # ===== YOUR CODE HERE =====
-# Strategy (solverbot.Hybrid): CFR+ blueprint (data/strategy.npz) by default;
-# switches to hero.py's exploitative play once the opponent's statistics are
-# clearly far from equilibrium. Falls back to hero.py on anything unexpected.
-from solverbot import Hybrid
+# Strategy (solverbot.HybridX): always plays the CFR+ blueprint
+# (data/strategy.npz); once an opponent's statistics are clearly far from
+# equilibrium, overrides specific blueprint actions where that opponent leaks
+# (honest raisers, calling stations, over-folders, maniacs). Falls back to
+# hero.py on anything unexpected.
+from solverbot import HybridX
 
-BOT = Hybrid()   # loads data/strategy.npz at startup (not charged to the time bank)
+BOT = HybridX()   # loads data/strategy.npz at startup (not charged to the time bank)
 
 
 def new_half(config: AgentConfig, memory: dict) -> None:

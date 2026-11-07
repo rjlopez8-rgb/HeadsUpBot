@@ -299,8 +299,9 @@ class Solver:
         b1 = self.best_response_value(1)
         return b0 / 2, b1 / 2, (b0 + b1) / 4
 
-    def save(self, path: str):
+    def save(self, path: str, feature: str = "hs"):
         np.savez_compressed(path, thr=self.ab["thr"], K=self.K, strategy=self.current("avg").astype(np.float32),
+                            feature=np.array(feature),
                             dec_nodes=self.dec, keys=np.array([repr(self.nodes[i].key) for i in self.dec]),
                             players=self.player[self.dec], streets=self.street[self.dec])
 
@@ -313,10 +314,12 @@ def main():
     ap.add_argument("--every", type=int, default=50)
     ap.add_argument("--out", default=None)
     ap.add_argument("--resume", default=None)
+    ap.add_argument("--feature", default="hs", choices=["hs", "h2"],
+                    help="h2: data tags are read as deals_<tag>_h2.npz (E[HS^2] buckets)")
     a = ap.parse_args()
     eqs, ocs = [], []
     for tag in a.data:
-        z = np.load(os.path.join(DATA, f"deals_{tag}.npz"))
+        z = np.load(os.path.join(DATA, f"deals_{tag}{'_h2' if a.feature == 'h2' else ''}.npz"))
         eqs.append(z["eq"])
         ocs.append(z["outcome"])
     eq, oc = np.concatenate(eqs), np.concatenate(ocs)
@@ -336,7 +339,7 @@ def main():
             print(f"iter {sv.t:5d}  {time.time() - t0:6.0f}s  exploitability {e * 1000:7.1f} mbb/hand "
                   f"(BR0 {e0:+.3f}, BR1 {e1:+.3f} bb)  button value {gv:+.3f} bb/hand", flush=True)
     out = a.out or os.path.join(DATA, f"strategy_K{a.K}.npz")
-    sv.save(out)
+    sv.save(out, a.feature)
     np.savez_compressed(out.replace(".npz", "_state.npz"), regret=sv.regret, avg=sv.avg, t=sv.t)
     print("saved", out)
 

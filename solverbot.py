@@ -26,11 +26,13 @@ import numpy as np
 
 import pokerlib as pl
 from game import Action, Street
+from solver.features import batch_ehs2
 from hero import Hero, Params
 
 F, C, RH, RP = Action.FOLD, Action.CHECK_CALL, Action.RAISE_HALF, Action.RAISE_POT
 AGGR = (RH, RP)
 K_SAMPLES = (128, 128, 128, 160)          # must match solver/dataset.py
+H2_RUNOUTS, H2_OPPS = 16, 16                # must match solver/features.py
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_STRATEGY = os.path.join(_HERE, "data", "strategy.npz")
 
@@ -43,6 +45,7 @@ class Blueprint:
         self.strategy = z["strategy"]
         self.players = z["players"]
         self.index = {k: j for j, k in enumerate(z["keys"].tolist())}
+        self.feature = str(z["feature"]) if "feature" in z.files else "hs"
 
     def node(self, history) -> int:
         return self.index.get(repr(tuple(int(a.action) for a in history)), -1)
@@ -132,6 +135,43 @@ class SolverBot:
             m["we_bet_last"] = True
         return a
 
+    def _blueprint(self, obs, m):
+        """The blueprint's sampled action plus our equity and bucket."""
+        rng = m["xrng"]
+        j = self.bp.node(obs.action_history)
+        if j < 0:
+            raise KeyError("node not in tree")
+        me = 0 if obs.is_button else 1
+        if int(self.bp.players[j]) != me:
+            raise ValueError("player mismatch")
+        st = int(obs.street)
+        n = samples_for(K_SAMPLES[st], m.get("sb_t", 0.0), obs.hand_index)
+        e = pl.equity(obs.hole_cards, obs.board, n, rng)
+        b = self.bp.bucket(st, self.feature(st, e, obs, m, n))
+        probs = self.bp.strategy[j, b].astype(np.float64).copy()
+        mask = np.zeros(4)
+        for a in obs.legal_actions:
+            mask[int(a)] = 1.0
+        probs *= mask
+        if probs.sum() <= 0:
+            probs = mask
+        probs /= probs.sum()
+        return Action(int(rng.choice(4, p=probs))), e, b
+
+    def feature(self, st, e, obs, m, n):
+        """Bucketing feature, matching how the blueprint was trained:
+        "hs": equity vs a random hand (E[HS]); "h2": E[HS^2] on flop/turn,
+        HS^2 on the river, table equity preflop."""
+        if self.bp.feature != "h2" or st == 0:
+            return e
+        if st == 3:
+            return e * e
+        R = H2_RUNOUTS if n >= 96 else 8
+        h = np.asarray(obs.hole_cards, dtype=np.int64)[None, :]
+        board = np.zeros((1, 5), dtype=np.int64)
+        board[0, :len(obs.board)] = obs.board
+        return float(batch_ehs2(h, board, len(obs.board), m["xrng"], R, H2_OPPS)[1][0])
+
     def _decide(self, obs, m):
         self.fallback._track(obs, m)               # opponent stats (shared with hero)
         rng = m["xrng"]
@@ -142,25 +182,7 @@ class SolverBot:
         if (self.exploit or self.fold_exploit) and can_raise and self.fallback._exploit_mode(m):
             return RH if RH in legal else RP
 
-        j = self.bp.node(obs.action_history)
-        if j < 0:
-            raise KeyError("node not in tree")
-        me = 0 if obs.is_button else 1
-        if int(self.bp.players[j]) != me:
-            raise ValueError("player mismatch")
-        st = int(obs.street)
-        n = samples_for(K_SAMPLES[st], m.get("sb_t", 0.0), obs.hand_index)
-        e = pl.equity(obs.hole_cards, obs.board, n, rng)
-        b = self.bp.bucket(st, e)
-        probs = self.bp.strategy[j, b].astype(np.float64).copy()
-        mask = np.zeros(4)
-        for a in legal:
-            mask[int(a)] = 1.0
-        probs *= mask
-        if probs.sum() <= 0:
-            probs = mask
-        probs /= probs.sum()
-        a = Action(int(rng.choice(4, p=probs)))
+        a, e, b = self._blueprint(obs, m)
 
         if not self.exploit:
             return a
@@ -240,3 +262,81 @@ class Hybrid(SolverBot):
         if m["mode"] == "hero":
             return self.fallback._decide(obs, m)       # tracks stats itself
         return super()._decide(obs, m)
+
+
+# ---------------------------------------------------------- hybrid, overrides
+@dataclass
+class OParams:
+    margin: float = 0.03          # R1: fold if range equity < odds + margin
+    range_k: float = 1.6          # opponent range = top (aggr_rate * range_k) of hands
+    range_min: float = 0.12
+    tight_ratio: float = 0.75     # R1 active if opp aggression < tight_ratio * equilibrium
+    fold_gap: float = 0.10        # R2/R3 active if fold rate is this far from equilibrium
+    weak_frac: float = 0.45       # bluff = blueprint raise from a bucket below this share of K
+    value_eq: float = 0.62        # R2: bet for value vs callers from this equity
+    bluff_scale: float = 1.2      # R3: extra bluff prob per unit of excess fold rate
+    loose_ratio: float = 1.35     # R4 active if opp aggression > loose_ratio * equilibrium
+
+
+class HybridX(Hybrid):
+    """Blueprint always; in exploit mode, override specific blueprint actions
+    where the opponent's statistics reveal a leak (never abandons the
+    blueprint wholesale, so it keeps its edge vs strong heuristic bots)."""
+
+    def __init__(self, path: str = DEFAULT_STRATEGY, op: OParams | None = None, **kw):
+        super().__init__(path, **kw)
+        self.op = op or OParams()
+
+    def _decide(self, obs, m):
+        if obs.hand_index >= m["next_check"] and m["cur_hand"] != obs.hand_index:
+            d = self.deviation(m)
+            if m["mode"] == "bp" and d > self.hp.d_hi:
+                m["mode"] = "x"
+            elif m["mode"] == "x" and d < self.hp.d_lo:
+                m["mode"] = "bp"
+            m["mode_log"].append((obs.hand_index, round(d, 3), m["mode"]))
+            m["next_check"] = obs.hand_index + self.hp.recheck_every
+        self.fallback._track(obs, m)
+        legal = obs.legal_actions
+        can_raise = RH in legal or RP in legal
+        if can_raise and self.fallback._exploit_mode(m):
+            return RH if RH in legal else RP
+        a, e, b = self._blueprint(obs, m)
+        if m["mode"] != "x":
+            return a
+        return self._override(obs, m, a, e, b)
+
+    def _override(self, obs, m, a, e, b):
+        op, rng = self.op, m["xrng"]
+        legal = obs.legal_actions
+        can_raise = RH in legal or RP in legal
+        g = 0 if obs.street == Street.PREFLOP else 1
+        aggr = self.fallback._aggr_rate(m, g)
+        a_eq = EQ_PROFILE[g]
+        fold_rate = self.fallback._fold_rate(m)
+        f_eq = EQ_PROFILE[2]
+        facing = obs.to_call > 0
+        opp_raised = any(x.street == obs.street and not x.is_me and x.action in AGGR
+                         for x in obs.action_history)
+        weak = b < op.weak_frac * self.bp.K
+        if facing and opp_raised:
+            odds = obs.to_call / (obs.pot + obs.to_call)
+            if aggr < op.tight_ratio * a_eq and a != F:
+                # R1: honest/tight aggressor - check our equity vs its real range
+                keep = min(1.0, max(op.range_min, aggr * op.range_k))
+                er = pl.equity(obs.hole_cards, obs.board, 160, rng, keep)
+                if er < odds + op.margin and F in legal:
+                    return F
+                if a in AGGR and er < 0.5:
+                    return C
+            if aggr > op.loose_ratio * a_eq and a == F and e >= odds:
+                return C                                   # R4: call down a maniac
+        if a in AGGR and weak and fold_rate < f_eq - op.fold_gap:
+            return C                                       # R2: no bluffs vs callers
+        if (a == C and not facing and can_raise and fold_rate < f_eq - op.fold_gap
+                and e >= op.value_eq):
+            return RH if RH in legal else RP               # R2: thin value vs callers
+        if (a == C and not facing and can_raise and fold_rate > f_eq + op.fold_gap
+                and rng.random() < op.bluff_scale * (fold_rate - f_eq - op.fold_gap)):
+            return RH if RH in legal else RP               # R3: bluff over-folders
+        return a
