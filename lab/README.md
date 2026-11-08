@@ -35,6 +35,11 @@
 * Timing: 3.4–3.7 s of 8 s with a CPU hog on our core (about 1.5 s normally). 0 errors. Startup is about 1.5 s.
 * Official smoke test passed on a read-only, non-root copy of the repo.
 
+## Can an adaptive bot "read" us? (leak hunting)
+* `lab/leakscan.py`: a near-equilibrium opponent plus ONE systematic deviation on ONE street (6 kinds × 4 streets). With 8 seeds, **no deviation profits against us**. "Bet whenever checked to" looked like −0.3 with 4 seeds but was noise, and doing it on every street loses (+0.46 for us).
+* `pool.FoldEquityHunter`: an adaptive bot that measures our fold rate per street and bet size during the half, bluffs wherever we over-fold, and folds to our bets on streets where our revealed bets are never bluffs. **It loses to us** (+0.10 to +0.39 over 8 seeds). Our measured fold rates are at or below break-even everywhere except a small excess vs half-pot bets on the flop (37% vs 33%) and river (38% vs 33%), worth ≈0.05–0.1 bb/deal to a perfect exploiter.
+* Style switchers (bluff early, then value-only) are handled by the 40-action window on the bluff rate.
+
 ## Commands
 ```bash
 pip install numpy fastapi uvicorn pytest

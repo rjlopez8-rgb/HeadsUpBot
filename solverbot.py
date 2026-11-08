@@ -328,6 +328,7 @@ class OParams:
     sd_gap: float = 0.08          # how far from sd_eq_rate before acting on it
     sd_call_margin: float = 0.02  # R5: vs over-bluffers, call if equity >= odds - this
     sd_window: int = 40           # only the most recent revealed actions count (vs style switchers)
+    sd_switch: bool = False       # over-bluffing alone switches the exploit layer on (tested: neutral, so off)
 
 
 class HybridX(Hybrid):
@@ -392,9 +393,14 @@ class HybridX(Hybrid):
     def _decide(self, obs, m):
         if obs.hand_index >= m["next_check"] and m["cur_hand"] != obs.hand_index:
             d = self.deviation(m)
-            if m["mode"] == "bp" and d > self.hp.d_hi:
+            # proven over-bluffing switches the exploit layer on even when the raw
+            # frequencies look balanced (a smart adaptive bluffer would look balanced)
+            br = self.bluff_rate(m)
+            bluffy = (self.op.sd_switch and br is not None
+                      and br > self.op.sd_eq_rate + self.op.sd_gap)
+            if m["mode"] == "bp" and (d > self.hp.d_hi or bluffy):
                 m["mode"] = "x"
-            elif m["mode"] == "x" and d < self.hp.d_lo:
+            elif m["mode"] == "x" and d < self.hp.d_lo and not bluffy:
                 m["mode"] = "bp"
             m["mode_log"].append((obs.hand_index, round(d, 3), m["mode"]))
             m["next_check"] = obs.hand_index + self.hp.recheck_every

@@ -409,3 +409,83 @@ class Switcher(Base):
         if obs.to_call == 0:
             return C
         return C if e >= odds else F
+
+
+class FoldEquityHunter(Base):
+    """Adaptive red-team bot that 'reads' its opponent during the half.
+
+    Base strategy: a strong blueprint. On top of it, it measures, per street
+    and per bet size, how often the OPPONENT folds to its bets. Wherever the
+    opponent folds more than break-even (bet / (pot + bet)) plus a margin, it
+    bets every weak hand there. It also reads the opponent's revealed hands:
+    if the opponent's bets on a street are almost never bluffs, it folds its
+    medium hands against them."""
+
+    def __init__(self, path, margin=0.06, prior_w=8.0, seed=51, value_read=True):
+        self.path, self.margin, self.prior_w, self.seed, self.value_read = path, margin, prior_w, seed, value_read
+
+    def new_half(self, config, m):
+        from solverbot import SolverBot
+        self.inner = SolverBot(self.path, exploit=False, fold_exploit=False, precision=1)
+        self.inner.new_half(config, m)
+        m["feh_rng"] = np.random.default_rng(self.seed)
+        m["feh"] = {}                    # (street, size) -> [bets, folds]
+        m["feh_pending"] = None
+        m["feh_hand"] = -1
+        m["feh_hist"] = ()
+        m["opp_bets_sd"] = {s: [0, 0] for s in range(4)}   # street -> [revealed bets, bluffs]
+
+    def _resolve(self, folded, m):
+        if m["feh_pending"] is not None:
+            c = m["feh"].setdefault(m["feh_pending"], [0, 0])
+            c[0] += 1
+            c[1] += 1 if folded else 0
+            m["feh_pending"] = None
+
+    def on_hand_end(self, result, m):
+        self.inner.on_hand_end(result, m)
+        self._resolve((not result.went_to_showdown) and result.winner == "me", m)
+        if self.value_read and result.went_to_showdown and result.opp_hole is not None \
+                and m["feh_hand"] == result.hand_index:
+            board = list(result.board)
+            for st in sorted({int(a.street) for a in m["feh_hist"] if a.is_me is False and a.action in (RH, RP)}):
+                eq = (pl.preflop_eq(np.asarray(result.opp_hole)) if st == 0 else
+                      pl.equity(result.opp_hole, board[:(3, 4, 5)[st - 1]], 64, m["feh_rng"]))
+                rec = m["opp_bets_sd"][st]
+                rec[0] += 1
+                rec[1] += 1 if eq < 0.4 else 0
+
+    def choose_action(self, obs, m):
+        if m["feh_pending"] is not None and m["feh_hand"] == obs.hand_index:
+            self._resolve(False, m)                       # opponent did not fold to our last bet
+        m["feh_hand"], m["feh_hist"] = obs.hand_index, obs.action_history
+        a = self.inner.choose_action(obs, m)
+        legal = obs.legal_actions
+        st = int(obs.street)
+        rng = m["feh_rng"]
+        facing = obs.to_call > 0
+        # 1) value read: opponent's bets on this street are (almost) never bluffs -> fold medium hands
+        rec = m["opp_bets_sd"][st]
+        if self.value_read and facing and a == C and rec[0] >= 10 and (rec[1] + 0.5) / (rec[0] + 3) < 0.08:
+            e = pl.equity(obs.hole_cards, obs.board, 96, rng) if st else float(pl.preflop_eq(np.asarray(obs.hole_cards)))
+            if e < 0.58 and F in legal:
+                return F
+        # 2) fold-equity hunting: bluff wherever the opponent over-folds to that bet size
+        if a in (C, F) and (RH in legal or RP in legal):
+            best, best_edge = None, 0.0
+            for size in (RH, RP):
+                if size not in legal:
+                    continue
+                bet = obs.raise_to[size] - obs.my_bet
+                pot_after = obs.pot + bet
+                be = bet / pot_after if pot_after else 0.5
+                bets, folds = m["feh"].get((st, int(size)), [0, 0])
+                rate = (folds + be * self.prior_w) / (bets + self.prior_w)
+                edge = rate - be - self.margin
+                if edge > best_edge:
+                    best, best_edge = size, edge
+            if best is not None:
+                a = best
+        if a in (RH, RP):
+            m["feh_pending"] = (st, int(a))
+        return a
