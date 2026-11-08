@@ -489,3 +489,44 @@ class FoldEquityHunter(Base):
         if a in (RH, RP):
             m["feh_pending"] = (st, int(a))
         return a
+
+
+class DrewProxy(Base):
+    """Stand-in for drew's sdplo_v5, reshaped from his match report (his bot =
+    'us' in his report): strong blueprint base, but 4-bets ~47% when facing a
+    3-bet (with coin flips), never folds to 4-bets, 3-bets a bit more, stabs
+    57% of flops when checked to, and calls river bets too light."""
+
+    def __init__(self, path, seed=61, fourbet_eq=0.45, stab=0.3, river_call_eq=0.25):
+        self.path, self.seed = path, seed
+        self.fourbet_eq, self.stab, self.river_call_eq = fourbet_eq, stab, river_call_eq
+
+    def new_half(self, config, m):
+        from solverbot import SolverBot
+        self.inner = SolverBot(self.path, exploit=False, fold_exploit=False, precision=1)
+        self.inner.new_half(config, m)
+        m["dp_rng"] = np.random.default_rng(self.seed)
+
+    def on_hand_end(self, result, m):
+        self.inner.on_hand_end(result, m)
+
+    def choose_action(self, obs, m):
+        a = self.inner.choose_action(obs, m)
+        legal, rng, st = obs.legal_actions, m["dp_rng"], int(obs.street)
+        can_raise = RH in legal or RP in legal
+        if st == 0:
+            e = float(pl.preflop_eq(np.asarray(obs.hole_cards)))
+            if obs.raises_this_street == 2 and obs.to_call > 0 and can_raise and a != RP and e >= self.fourbet_eq:
+                return RP if RP in legal else RH                      # loose 4-bets
+            if obs.raises_this_street >= 3 and a == F:
+                return C                                              # never fold to 4-bets
+            if obs.raises_this_street == 1 and obs.to_call > 0 and a == C and can_raise and e >= 0.55 \
+                    and rng.random() < 0.3:
+                return RP if RP in legal else RH                      # 3-bet a bit more
+            return a
+        e = pl.equity(obs.hole_cards, obs.board, 96, rng)
+        if st == 1 and obs.to_call == 0 and a == C and can_raise and e >= 0.3 and rng.random() < self.stab:
+            return RH if RH in legal else RP                          # flop stabs
+        if st == 3 and obs.to_call > 0 and a == F and e >= self.river_call_eq:
+            return C                                                  # light river calls
+        return a

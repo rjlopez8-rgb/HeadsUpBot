@@ -26,6 +26,7 @@ import numpy as np
 
 import pokerlib as pl
 from game import Action, Street
+from oppmodel import OppModel, spots
 from solver.features import batch_ehs2
 from hero import Hero, Params
 
@@ -257,6 +258,20 @@ class SolverBot:
         return a
 
 
+# Blueprint's own raise frequency per spot (oppmodel.spots), measured in self-play.
+def _load_eq_spot_freq():
+    import json
+    try:
+        d = json.load(open(os.path.join(_HERE, "data", "eq_spot_freqs.json")))
+        return {tuple(int(x) if x.strip() not in ("True", "False") else x.strip() == "True"
+                      for x in k.strip("()").split(",")): v[3] for k, v in d.items()}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+EQ_SPOT_FREQ = _load_eq_spot_freq()
+
+
 # ------------------------------------------------------------------ hybrid
 # Opponent "fingerprint" of the blueprint itself (measured in self-play):
 # preflop raise rate, postflop raise rate, how often it folds to our bets.
@@ -345,6 +360,15 @@ class OParams:
     # Defend a bit more there - only vs opponents whose showdowns prove they bluff
     # at least as often as equilibrium (never vs honest bettors: the R4 lesson).
     mdf_q: float = 0.0            # chance to turn a blueprint fold into a call (0 = off)
+    # spot-specific tight-raiser rule (always on, evidence-gated; oppmodel.py):
+    # where the opponent raises far less often than the blueprint does, its
+    # raises there are strong -> judge our hand against that narrower range.
+    g_on: bool = False            # tested: hurts (+1.39 -> +1.21 bb/deal, loses share vs drew stand-in) -> off
+    g_min_n: int = 20             # opponent decisions seen in that spot
+    g_tight: float = 0.5          # active if their raise freq <= this x blueprint's
+    g_kappa: float = 1.5          # their range = top (raise freq x kappa) of hands
+    g_raise_min: float = 0.55     # keep re-raising only with this equity vs their range
+    g_margin: float = 0.02        # call only with equity >= pot odds + margin
     mdf_max_frac: float = 0.55    # only vs bets up to this fraction of the pot
 
 
@@ -359,6 +383,7 @@ class HybridX(Hybrid):
 
     def new_half(self, config, m):
         super().new_half(config, m)
+        OppModel.init(m)
         m["sd_aggr"] = 0           # opponent bets/raises revealed at showdown
         m["sd_weak"] = 0           # ... of which made with a weak hand
         m["hist_hand"] = -1
@@ -367,12 +392,22 @@ class HybridX(Hybrid):
     def choose_action(self, obs, m):
         m["hist_hand"] = obs.hand_index
         m["hist"] = obs.action_history
-        return super().choose_action(obs, m)
+        try:
+            OppModel.observe(m, obs)
+        except Exception:  # noqa: BLE001
+            pass
+        a = super().choose_action(obs, m)
+        try:
+            OppModel.our_action(m, obs, a)
+        except Exception:  # noqa: BLE001
+            pass
+        return a
 
     def on_hand_end(self, result, m):
         super().on_hand_end(result, m)
         try:
             self._learn_showdown(result, m)
+            OppModel.hand_end(m, result)
         except Exception:  # noqa: BLE001 - learning must never break play
             pass
 
@@ -406,6 +441,34 @@ class HybridX(Hybrid):
         if len(log) < self.op.sd_min:
             return None
         return (sum(log) + self.op.sd_eq_rate * 4) / (len(log) + 4)
+
+    def _tight_spot(self, obs, m, a):
+        op = self.op
+        if not op.g_on or obs.to_call <= 0 or a == F:
+            return a
+        st = int(obs.street)
+        spot = None
+        for _, sp, act, is_me in spots(obs.action_history):
+            if not is_me and sp[0] == st and act in AGGR:
+                spot = sp                       # where the opponent's latest raise was made
+        if spot is None:
+            return a
+        n, _, _, f_opp = OppModel.freq(m, spot)
+        f_eq = EQ_SPOT_FREQ.get(spot)
+        if n < op.g_min_n or f_eq is None or f_eq <= 0 or f_opp > op.g_tight * f_eq:
+            return a
+        br = self.bluff_rate(m)
+        if br is not None and br > op.sd_eq_rate + op.sd_gap:
+            return a                            # proven bluffer: its rare raises aren't honest
+        keep = min(1.0, max(0.05, f_opp * op.g_kappa))
+        er = pl.equity(obs.hole_cards, obs.board, 160, m["xrng"], keep)
+        odds = obs.to_call / (obs.pot + obs.to_call)
+        legal = obs.legal_actions
+        if a in AGGR and er < op.g_raise_min:
+            a = C if er >= odds + op.g_margin else (F if F in legal else C)
+        elif a == C and er < odds + op.g_margin and F in legal:
+            a = F
+        return a
 
     def _mdf_guard(self, obs, m, a, e):
         op = self.op
@@ -441,6 +504,7 @@ class HybridX(Hybrid):
             return RH if RH in legal else RP
         a, e, b = self._blueprint(obs, m)
         a = self._mdf_guard(obs, m, a, e)
+        a = self._tight_spot(obs, m, a)
         if m["mode"] != "x":
             return a
         return self._override(obs, m, a, e, b)

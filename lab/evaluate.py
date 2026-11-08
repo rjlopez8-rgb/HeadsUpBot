@@ -58,10 +58,11 @@ def make(spec: str):
         from solverbot import Hybrid
         path = arg or os.path.join(os.path.dirname(_HERE), "data", "strategy.npz")
         return lambda: Hybrid(path)
-    if kind == "hybridX":
-        from solverbot import HybridX
+    if kind in ("hybridX", "hybridX_nog"):
+        from solverbot import HybridX, OParams
         path = arg or os.path.join(os.path.dirname(_HERE), "data", "strategy.npz")
-        return lambda: HybridX(path, precision=prec)
+        op = OParams(g_on=False) if kind == "hybridX_nog" else None
+        return lambda: HybridX(path, precision=prec, op=op)
     if kind == "file":
         return load_agent_file(arg)
     raise ValueError(spec)
