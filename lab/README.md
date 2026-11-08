@@ -26,6 +26,12 @@
 5. Precision 4 (4x the training's Monte Carlo samples) when time allows. The time guard aims for 2.5 s of the 8 s bank and steps the samples down (1, 0.5, 0.25, 0.1) if a half falls behind pace (the estimate includes HTTP overhead).
 6. Any exception falls back to `hero.py`, then to CHECK_CALL. It never crashes.
 
+## v8 (overnight, final)
+* **Action thresholding (0.5)**: blueprint actions below 50% probability are dropped and the rest renormalized (Ganzfried & Sandholm: removes abstraction noise). Full 41-opponent gauntlet: 35.8/41 points, +2.83 bb/deal (v7: 35.0, +2.68). Against the 10 strongest opponents over 8 seeds: 5.94 vs 5.69 points, and no opponent above 0.5 points. Fresh red team: 25.5/26.
+* **Time guard**: target 2.0 s, 0.6 ms per-request overhead estimate. Stress test: 2.6–2.9 s of 8 (always_pot), 4.0–4.8 s of 8 (always_half, 4,200 requests/half, CPU hog on our core; most of it is web-server overhead).
+* **Tested and rejected**: 2D strength × potential buckets (−0.13 bb/deal vs the current blueprint over 12 seeds), spot-specific tight-raiser rule (hurt), over-fold guard (neutral).
+* **drew's practice match** (his report is written from his side): we were +0.49 bb/deal ahead (a draw). His bot 4-bets coin flips 47% of the time; ours 4-bets about 8%. `pool.DrewProxy` reproduces his tendencies.
+
 ## Results (all reproducible with the commands below)
 * Simulator = official judge: identical bb/deal and interval on the same seed.
 * Pool of 15+ opponents (AI-typical Monte Carlo bots, bots using the official evaluator, the guide's example, weird styles, an adaptive exploiter): **every match won**.
@@ -55,6 +61,9 @@ python lab/redteam.py --target hybridX --n 30 --seeds 2 --rseed 9
 
 # tune the exploit settings (targets vs guards); champion -> lab/results/x_champion.json
 python lab/tune_x.py --cands 12 --rounds 2
+
+# everything at once: all 41 opponents from the project
+python lab/gauntlet.py --cands hybridX --seeds 2
 
 # timing under CPU contention with the official judge (Linux, needs taskset)
 bash lab/stress_time.sh 1000

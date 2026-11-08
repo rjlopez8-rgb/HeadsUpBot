@@ -76,7 +76,7 @@ class Blueprint:
 # We aim for TIME_TARGET (a quarter of the bank) and degrade in steps if the
 # machine is slow: fewer Monte Carlo samples -> slightly noisier buckets, but
 # never an empty time bank. Typical use on a normal core is ~1.3 s per half.
-TIME_TARGET = float(os.environ.get("SOLVERBOT_TIME_TARGET", "2.5"))
+TIME_TARGET = float(os.environ.get("SOLVERBOT_TIME_TARGET", "2.0"))
 HARD_CAP = max(5.0, TIME_TARGET * 2.5)   # past this, use the bare minimum of samples
 
 
@@ -96,7 +96,7 @@ def samples_for(base: int, used: float, hand_index: int) -> int:
     return max(16, int(base * budget_fraction(used, hand_index)))
 
 
-OVERHEAD_PER_CALL = 0.0004   # judge also charges HTTP/JSON handling we can't time
+OVERHEAD_PER_CALL = 0.0006   # judge also charges HTTP/JSON handling we can't time
 
 
 def charged_estimate(m) -> float:
