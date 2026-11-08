@@ -341,6 +341,11 @@ class OParams:
     sd_call_margin: float = 0.02  # R5: vs over-bluffers, call if equity >= odds - this
     sd_window: int = 40           # only the most recent revealed actions count (vs style switchers)
     sd_switch: bool = False       # over-bluffing alone switches the exploit layer on (tested: neutral, so off)
+    # over-fold guard: we fold ~37% vs half-pot bets on flop/river (break-even 33%).
+    # Defend a bit more there - only vs opponents whose showdowns prove they bluff
+    # at least as often as equilibrium (never vs honest bettors: the R4 lesson).
+    mdf_q: float = 0.0            # chance to turn a blueprint fold into a call (0 = off)
+    mdf_max_frac: float = 0.55    # only vs bets up to this fraction of the pot
 
 
 class HybridX(Hybrid):
@@ -402,6 +407,19 @@ class HybridX(Hybrid):
             return None
         return (sum(log) + self.op.sd_eq_rate * 4) / (len(log) + 4)
 
+    def _mdf_guard(self, obs, m, a, e):
+        op = self.op
+        if op.mdf_q <= 0 or a != F or obs.to_call <= 0 or int(obs.street) not in (1, 3):
+            return a
+        br = self.bluff_rate(m)
+        if br is None or br < op.sd_eq_rate:
+            return a
+        bet_frac = obs.to_call / max(1, obs.pot - obs.to_call)
+        odds = obs.to_call / (obs.pot + obs.to_call)
+        if bet_frac <= op.mdf_max_frac and e >= odds and m["xrng"].random() < op.mdf_q:
+            return C
+        return a
+
     def _decide(self, obs, m):
         if obs.hand_index >= m["next_check"] and m["cur_hand"] != obs.hand_index:
             d = self.deviation(m)
@@ -422,6 +440,7 @@ class HybridX(Hybrid):
         if can_raise and self.fallback._exploit_mode(m):
             return RH if RH in legal else RP
         a, e, b = self._blueprint(obs, m)
+        a = self._mdf_guard(obs, m, a, e)
         if m["mode"] != "x":
             return a
         return self._override(obs, m, a, e, b)
