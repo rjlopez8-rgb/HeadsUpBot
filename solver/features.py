@@ -30,6 +30,7 @@ import fasteval as fe  # noqa: E402
 R_RUNOUTS = 16
 O_OPPS = 16
 DATA = os.path.join(_HERE, "data")
+SUFFIX = os.environ.get("FEATURES_SUFFIX", "h2")
 
 
 def batch_ehs2(holes: np.ndarray, boards: np.ndarray, nb: int, rng, R: int = R_RUNOUTS,
@@ -66,14 +67,15 @@ def _chunk(args):
     rng = np.random.default_rng(seed)
     cards = cards.astype(np.int64)
     n = cards.shape[0]
-    out = np.zeros((n, 2, 2), dtype=np.float32)          # player, street(flop, turn) -> E[HS^2]
+    out = np.zeros((n, 2, 2, 2), dtype=np.float32)       # player, street(flop, turn), (E[HS], E[HS^2])
     board = cards[:, 10:15]
     for i in range(0, n, 150):
         sl = slice(i, min(n, i + 150))
         for p in range(2):
             h = cards[sl, 5 * p:5 * p + 5]
             for j, nb in enumerate((3, 4)):
-                out[sl, p, j] = batch_ehs2(h, board[sl], nb, rng)[1]
+                m1, m2 = batch_ehs2(h, board[sl], nb, rng)
+                out[sl, p, j, 0], out[sl, p, j, 1] = m1, m2
     return out
 
 
@@ -84,10 +86,13 @@ def convert(tag: str, procs: int):
     with mp.get_context("fork").Pool(procs) as pool:
         res = pool.map(_chunk, [(p, 7919 * i + hash(tag) % 1000) for i, p in enumerate(parts)])
     h2 = np.concatenate(res)
-    eq[:, :, 1] = h2[:, :, 0]
-    eq[:, :, 2] = h2[:, :, 1]
+    ehs = eq.copy()                           # E[HS] from the SAME runouts as E[HS^2] (2D buckets)
+    ehs[:, :, 1] = h2[:, :, 0, 0]
+    ehs[:, :, 2] = h2[:, :, 1, 0]
+    eq[:, :, 1] = h2[:, :, 0, 1]
+    eq[:, :, 2] = h2[:, :, 1, 1]
     eq[:, :, 3] = eq[:, :, 3] ** 2            # river: HS^2 (monotone in HS, same buckets)
-    np.savez_compressed(os.path.join(DATA, f"deals_{tag}_h2.npz"), eq=eq, outcome=oc, cards=cards)
+    np.savez_compressed(os.path.join(DATA, f"deals_{tag}_{SUFFIX}.npz"), eq=eq, ehs=ehs, outcome=oc, cards=cards)
 
 
 if __name__ == "__main__":

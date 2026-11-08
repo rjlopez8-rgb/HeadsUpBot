@@ -71,6 +71,33 @@ def build_abstraction(eq: np.ndarray, outcome: np.ndarray, K: int, alpha: float 
     return dict(K=K, thr=thr, init=init, T=T, outc=outc)
 
 
+def abstraction_from_buckets(buck: np.ndarray, outcome: np.ndarray, K: int, alpha: float = 4.0, **extra):
+    """Same as build_abstraction, but with precomputed buckets (N, 2, 4)."""
+    N = buck.shape[0]
+    S = K * K
+    buck = buck.astype(np.int64)
+    pair = np.stack([buck[:, 0, s] * K + buck[:, 1, s] for s in range(4)])
+    init = np.bincount(pair[0], minlength=S).astype(np.float64) / N
+    T = []
+    for s in range(3):
+        cnt = np.zeros((S, S))
+        np.add.at(cnt, (pair[s], pair[s + 1]), 1.0)
+        m = np.zeros((K, K))
+        np.add.at(m, (buck[:, 0, s], buck[:, 0, s + 1]), 1.0)
+        np.add.at(m, (buck[:, 1, s], buck[:, 1, s + 1]), 1.0)
+        m = (m + 1e-3) / (m + 1e-3).sum(axis=1, keepdims=True)
+        prior = np.einsum("ac,bd->abcd", m, m).reshape(S, S)
+        rows = cnt.sum(axis=1, keepdims=True)
+        T.append((cnt + alpha * prior) / (rows + alpha))
+    outc = np.zeros((4, S))
+    oc = outcome.astype(np.float64)
+    for s in range(4):
+        tot = np.bincount(pair[s], weights=oc, minlength=S)
+        n = np.bincount(pair[s], minlength=S)
+        outc[s] = tot / (n + 2.0)
+    return dict(K=K, init=init, T=T, outc=outc, **extra)
+
+
 # ---------------------------------------------------------------------- CFR
 class Solver:
     def __init__(self, abst: dict, dtype=np.float64):
@@ -282,6 +309,8 @@ class Solver:
                     cfv = -(opp * V4).sum(axis=2)
                 cfv = np.where(self.legal[jj][:, :, None], cfv, -np.inf)
                 best = cfv.argmax(axis=1)                            # (n,K)
+                if getattr(self, "_br_record", None) is not None:
+                    self._br_record[jj] = best
                 if who == 0:
                     idx = best[:, None, :, None].repeat(K, axis=3)
                     res[mm] = np.take_along_axis(V4, idx, axis=1)[:, 0]
@@ -292,6 +321,21 @@ class Solver:
         v0 = float(self.init @ self.V[0])
         return v0 if br == 0 else -v0
 
+    def best_response_strategy(self, sig=None) -> np.ndarray:
+        """A full one-hot strategy: at P0's nodes the best response to sig's
+        P1, at P1's nodes the best response to sig's P0 (in the abstraction)."""
+        D = len(self.dec)
+        out = np.zeros((D, self.K, 4), dtype=np.float32)
+        for br in (0, 1):
+            self._br_record = np.zeros((D, self.K), dtype=np.int64)
+            self.best_response_value(br, sig)
+            mine = self.player[self.dec] == br
+            idx = self._br_record[mine]
+            rows = np.where(mine)[0]
+            out[rows[:, None], np.arange(self.K)[None, :], idx] = 1.0
+        self._br_record = None
+        return out
+
     def exploitability(self) -> tuple[float, float, float]:
         """(BR vs P1 strategy, BR vs P0 strategy, avg) in bb/hand. If both
         players play our average strategy the sum would be 0 at equilibrium."""
@@ -300,8 +344,9 @@ class Solver:
         return b0 / 2, b1 / 2, (b0 + b1) / 4
 
     def save(self, path: str, feature: str = "hs"):
+        extra = {"centroids": self.ab["centroids"]} if "centroids" in self.ab else {}
         np.savez_compressed(path, thr=self.ab["thr"], K=self.K, strategy=self.current("avg").astype(np.float32),
-                            feature=np.array(feature),
+                            feature=np.array(feature), **extra,
                             dec_nodes=self.dec, keys=np.array([repr(self.nodes[i].key) for i in self.dec]),
                             players=self.player[self.dec], streets=self.street[self.dec])
 
@@ -314,9 +359,19 @@ def main():
     ap.add_argument("--every", type=int, default=50)
     ap.add_argument("--out", default=None)
     ap.add_argument("--resume", default=None)
-    ap.add_argument("--feature", default="hs", choices=["hs", "h2"],
+    ap.add_argument("--buckets", default=None, help="precomputed buckets file (solver/abstraction2.py)")
+    ap.add_argument("--feature", default="hs", choices=["hs", "h2", "h2d"],
                     help="h2: data tags are read as deals_<tag>_h2.npz (E[HS^2] buckets)")
     a = ap.parse_args()
+    if a.buckets:
+        z = np.load(a.buckets)
+        t0 = time.time()
+        ab = abstraction_from_buckets(z["buckets"], z["outcome"], int(z["K"]), thr=z["thr"], centroids=z["centroids"])
+        sv = Solver(ab)
+        if a.resume:
+            st = np.load(a.resume)
+            sv.regret, sv.avg, sv.t = st["regret"], st["avg"], int(st["t"])
+        return run(sv, a, t0)
     eqs, ocs = [], []
     for tag in a.data:
         z = np.load(os.path.join(DATA, f"deals_{tag}{'_h2' if a.feature == 'h2' else ''}.npz"))
@@ -330,6 +385,10 @@ def main():
         z = np.load(a.resume)
         sv.regret, sv.avg, sv.t = z["regret"], z["avg"], int(z["t"])
     print(f"{len(eq)} deals, K={a.K}, {sv.N} nodes, {len(sv.dec)} decisions; setup {time.time() - t0:.1f}s", flush=True)
+    return run(sv, a, t0)
+
+
+def run(sv, a, t0):
     t0 = time.time()
     for it in range(1, a.iters + 1):
         sv.iterate(sv.t % 2)

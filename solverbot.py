@@ -46,6 +46,7 @@ class Blueprint:
         self.players = z["players"]
         self.index = {k: j for j, k in enumerate(z["keys"].tolist())}
         self.feature = str(z["feature"]) if "feature" in z.files else "hs"
+        self.centroids = z["centroids"] if "centroids" in z.files else None
         # a blueprint may ship its own preflop table (the one it was trained with):
         # <strategy>.preflop.npy next to the strategy file; else the global table
         pf = path.replace(".npz", ".preflop.npy")
@@ -61,6 +62,12 @@ class Blueprint:
 
     def bucket(self, street: int, e: float) -> int:
         return int(np.searchsorted(self.thr[street], e, side="right"))
+
+    def bucket2d(self, street: int, ehs: float, ehs2: float) -> int:
+        """Nearest (E[HS], spread) centroid - solver/abstraction2.py."""
+        sd = max(0.0, ehs2 - ehs * ehs) ** 0.5
+        c = self.centroids[street]
+        return int(((c[:, 0] - ehs) ** 2 + (c[:, 1] - sd) ** 2).argmin())
 
 
 # ---------------------------------------------------------------- time guard
@@ -173,7 +180,7 @@ class SolverBot:
         st = int(obs.street)
         f = budget_fraction(charged_estimate(m), obs.hand_index) * self.precision
         n = max(16, int(K_SAMPLES[st] * f))
-        if self.bp.feature == "h2" and st in (1, 2):
+        if self.bp.feature in ("h2", "h2d") and st in (1, 2):
             # one E[HS^2] pass gives both E[HS] (for overrides) and the bucket feature
             side = max(8, int(round(16 * f ** 0.5)))
             h = np.asarray(obs.hole_cards, dtype=np.int64)[None, :]
@@ -181,13 +188,18 @@ class SolverBot:
             board[0, :len(obs.board)] = obs.board
             ehs, ehs2 = batch_ehs2(h, board, len(obs.board), rng, side, side)
             e, feat = float(ehs[0]), float(ehs2[0])
+            if self.bp.feature == "h2d":
+                b2 = self.bp.bucket2d(st, e, feat)
         elif st == 0:
             e = self.bp.preflop_eq(obs.hole_cards)
             feat = e
         else:
             e = pl.equity(obs.hole_cards, obs.board, n, rng)
             feat = self.feature(st, e, obs, m, n)
-        b = self.bp.bucket(st, feat)
+        if self.bp.feature == "h2d":
+            b = b2 if st in (1, 2) else self.bp.bucket(st, e)   # pre: table, river: HS
+        else:
+            b = self.bp.bucket(st, feat)
         probs = self.bp.strategy[j, b].astype(np.float64).copy()
         mask = np.zeros(4)
         for a in obs.legal_actions:
