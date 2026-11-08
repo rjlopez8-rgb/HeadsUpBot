@@ -382,3 +382,30 @@ class SkewedSolver(Base):
         if a in (RH, RP) and r < self.passive:
             return C
         return a
+
+
+class Switcher(Base):
+    """Bluffs heavily for the first `switch_at` hands (to get labelled a
+    bluffer), then bets/raises ONLY strong hands - punishing anyone still
+    calling it down."""
+
+    def __init__(self, switch_at=300, seed=41):
+        self.switch_at, self.seed = switch_at, seed
+
+    def choose_action(self, obs, m):
+        rng = m["rng"]
+        e = pl.equity(obs.hole_cards, obs.board, 120, rng)
+        odds = obs.to_call / (obs.pot + obs.to_call) if obs.to_call else 0.0
+        if obs.hand_index < self.switch_at:
+            if e < 0.4 and rng.random() < 0.45:
+                return _pick(obs, RP, RH, C)
+            if e > 0.7:
+                return _pick(obs, RH, C)
+        else:
+            if e > 0.72:
+                return _pick(obs, RP, RH, C)
+            if e > 0.6 and obs.to_call == 0:
+                return _pick(obs, RH, C)
+        if obs.to_call == 0:
+            return C
+        return C if e >= odds else F

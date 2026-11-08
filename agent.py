@@ -42,7 +42,7 @@ fasteval.load()  # 18 MB pair x triple score table
 
 # rename as your team/bot's name
 PARTICIPANT = "HeadsUpBot"
-AGENT_NAME = "hybridX-v6"
+AGENT_NAME = "hybridX-v7"
 
 
 # ===== YOUR CODE HERE =====

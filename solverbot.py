@@ -307,19 +307,27 @@ class Hybrid(SolverBot):
 # ---------------------------------------------------------- hybrid, overrides
 @dataclass
 class OParams:
-    margin: float = 0.03          # R1: fold if range equity < odds + margin
+    margin: float = 0.0246        # R1: fold if range equity < odds + margin (tuned)
     range_k: float = 1.6          # opponent range = top (aggr_rate * range_k) of hands
     range_min: float = 0.12
     tight_ratio: float = 0.75     # R1 active if opp aggression < tight_ratio * equilibrium
     fold_gap: float = 0.10        # R2/R3 active if fold rate is this far from equilibrium
     weak_frac: float = 0.45       # bluff = blueprint raise from a bucket below this share of K
-    value_eq: float = 0.62        # R2: bet for value vs callers from this equity
+    value_eq: float = 0.6017      # R2: bet for value vs callers from this equity (tuned)
     bluff_scale: float = 1.2      # R3: extra bluff prob per unit of excess fold rate
     loose_ratio: float = 1.35     # R4 active if opp aggression > loose_ratio * equilibrium
     r1: bool = True               # fold more vs honest/tight aggressors
     r2: bool = True               # no bluffs + thin value vs calling stations
     r3: bool = True               # bluff over-folders
     r4: bool = False              # call down maniacs: OFF - red team showed aggressive bots exploit it
+    # showdown evidence: share of the opponent's revealed bets/raises made with weak hands
+    sd_use: bool = True
+    sd_min: int = 12              # revealed aggressive actions needed before trusting the bluff rate
+    sd_weak_eq: float = 0.40      # an aggressive action with hand equity below this = a bluff
+    sd_eq_rate: float = 0.17      # the blueprint's own bluff rate measured the same way (0.15-0.19)
+    sd_gap: float = 0.08          # how far from sd_eq_rate before acting on it
+    sd_call_margin: float = 0.02  # R5: vs over-bluffers, call if equity >= odds - this
+    sd_window: int = 40           # only the most recent revealed actions count (vs style switchers)
 
 
 class HybridX(Hybrid):
@@ -330,6 +338,56 @@ class HybridX(Hybrid):
     def __init__(self, path: str = DEFAULT_STRATEGY, op: OParams | None = None, **kw):
         super().__init__(path, **kw)
         self.op = op or OParams()
+
+    def new_half(self, config, m):
+        super().new_half(config, m)
+        m["sd_aggr"] = 0           # opponent bets/raises revealed at showdown
+        m["sd_weak"] = 0           # ... of which made with a weak hand
+        m["hist_hand"] = -1
+        m["hist"] = ()
+
+    def choose_action(self, obs, m):
+        m["hist_hand"] = obs.hand_index
+        m["hist"] = obs.action_history
+        return super().choose_action(obs, m)
+
+    def on_hand_end(self, result, m):
+        super().on_hand_end(result, m)
+        try:
+            self._learn_showdown(result, m)
+        except Exception:  # noqa: BLE001 - learning must never break play
+            pass
+
+    def _learn_showdown(self, result, m):
+        if not self.op.sd_use or not result.went_to_showdown or result.opp_hole is None:
+            return
+        if m.get("hist_hand") != result.hand_index:
+            return
+        streets = sorted({int(a.street) for a in m["hist"] if not a.is_me and a.action in AGGR})
+        if not streets:
+            return
+        rng = m["xrng"]
+        board = list(result.board)
+        for st in streets:
+            if st == 0:
+                eq = self.bp.preflop_eq(result.opp_hole)
+            else:
+                eq = pl.equity(result.opp_hole, board[:(3, 4, 5)[st - 1]], 96, rng)
+            m["sd_aggr"] += 1
+            weak = eq < self.op.sd_weak_eq
+            if weak:
+                m["sd_weak"] += 1
+            log = m.setdefault("sd_log", [])
+            log.append(1 if weak else 0)
+            if len(log) > self.op.sd_window:
+                del log[0]
+
+    def bluff_rate(self, m):
+        """Opponent's observed bluff rate, or None until there is enough evidence."""
+        log = m.get("sd_log", [])
+        if len(log) < self.op.sd_min:
+            return None
+        return (sum(log) + self.op.sd_eq_rate * 4) / (len(log) + 4)
 
     def _decide(self, obs, m):
         if obs.hand_index >= m["next_check"] and m["cur_hand"] != obs.hand_index:
@@ -363,9 +421,15 @@ class HybridX(Hybrid):
         opp_raised = any(x.street == obs.street and not x.is_me and x.action in AGGR
                          for x in obs.action_history)
         weak = b < op.weak_frac * self.bp.K
+        br = self.bluff_rate(m)
+        over_bluffer = br is not None and br > op.sd_eq_rate + op.sd_gap
+        never_bluffs = br is not None and br < op.sd_eq_rate - op.sd_gap
         if facing and opp_raised:
             odds = obs.to_call / (obs.pot + obs.to_call)
-            if op.r1 and aggr < op.tight_ratio * a_eq and a != F:
+            if over_bluffer and a == F and e >= odds - op.sd_call_margin:
+                return C                                   # R5: call down proven over-bluffers
+            tight = aggr < op.tight_ratio * a_eq or never_bluffs
+            if op.r1 and tight and not over_bluffer and a != F:
                 # R1: honest/tight aggressor - check our equity vs its real range
                 keep = min(1.0, max(op.range_min, aggr * op.range_k))
                 er = pl.equity(obs.hole_cards, obs.board, 160, rng, keep)
