@@ -134,6 +134,7 @@ class SolverBot:
         self.bp = load_blueprint(path)
         # multiplier on all Monte Carlo sample counts (1 = training estimator)
         self.precision = precision if precision is not None else float(os.environ.get("SOLVERBOT_PRECISION", "4"))
+        self.threshold = float(os.environ.get("SOLVERBOT_THRESHOLD", "0.5"))   # thresholding: +strong-opp points, see lab/README
         self.xp = xp or XParams()
         self.exploit = exploit              # blueprint tweaks vs extreme opponents
         self.fold_exploit = fold_exploit    # raise everything vs check/fold bots
@@ -209,6 +210,11 @@ class SolverBot:
         if probs.sum() <= 0:
             probs = mask
         probs /= probs.sum()
+        if self.threshold > 0:
+            # thresholding (Ganzfried & Sandholm): drop low-probability actions,
+            # which are mostly abstraction noise, then renormalize
+            kept = np.where(probs >= self.threshold, probs, 0.0)
+            probs = kept / kept.sum() if kept.sum() > 0 else (probs == probs.max()).astype(float) / (probs == probs.max()).sum()
         return Action(int(rng.choice(4, p=probs))), e, b
 
     def feature(self, st, e, obs, m, n):

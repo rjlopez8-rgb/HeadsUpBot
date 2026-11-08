@@ -39,6 +39,10 @@ def make(spec: str):
     """Optional '@<precision>' suffix sets the Monte Carlo precision multiplier."""
     from hero import Hero, Params
     prec = None
+    thr = None
+    if "#" in spec:                       # '#<threshold>' suffix: action thresholding
+        spec, t = spec.rsplit("#", 1)
+        thr = float(t)
     if "@" in spec:
         spec, p = spec.rsplit("@", 1)
         prec = float(p)
@@ -62,7 +66,13 @@ def make(spec: str):
         from solverbot import HybridX, OParams
         path = arg or os.path.join(os.path.dirname(_HERE), "data", "strategy.npz")
         op = OParams(g_on=False) if kind == "hybridX_nog" else None
-        return lambda: HybridX(path, precision=prec, op=op)
+
+        def mk():
+            b = HybridX(path, precision=prec, op=op)
+            if thr is not None:
+                b.threshold = thr
+            return b
+        return mk
     if kind == "file":
         return load_agent_file(arg)
     raise ValueError(spec)
