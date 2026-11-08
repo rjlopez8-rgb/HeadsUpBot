@@ -20,15 +20,17 @@
    * R1: against players who rarely raise, check our equity against their real (narrow) raising range and fold when it is behind.
    * R2: against players who rarely fold, stop bluffing and bet medium-strong hands for value.
    * R3: against players who fold too much, bluff more.
-   * R4 (call down maniacs) is **off**. The red team showed that aggressive bots exploit it.
+   * R4 (call down maniacs) is **off**. The red team showed that aggressive bots exploit it: their aggression wasn't bluffing.
+   * R5: call down opponents **proven** to over-bluff. Each showdown reveals whether the opponent's bets and raises were weak hands; the bluff rate over its last 40 revealed aggressive actions is compared with the blueprint's own rate (0.17). R1 turns off against over-bluffers and turns on against players who never bluff. The 40-action window defeats bots that bluff early to get labeled and then switch to value-only betting.
 4. Against a bot that folds to almost every bet (for example, one whose time bank ran out), raise every hand.
-5. Time guard: aim for 2 s of the 8 s bank and cut the sample counts in stages if it falls behind (the estimate includes HTTP overhead).
+5. Precision 4 (4x the training's Monte Carlo samples) when time allows. The time guard aims for 2.5 s of the 8 s bank and steps the samples down (1, 0.5, 0.25, 0.1) if a half falls behind pace (the estimate includes HTTP overhead).
 6. Any exception falls back to `hero.py`, then to CHECK_CALL. It never crashes.
 
 ## Results (all reproducible with the commands below)
 * Simulator = official judge: identical bb/deal and interval on the same seed.
 * Pool of 15+ opponents (AI-typical Monte Carlo bots, bots using the official evaluator, the guide's example, weird styles, an adaptive exploiter): **every match won**.
-* Red team: 42 generated attackers in 3 rounds, aimed at our rules. After the R4 fix, **none beat us**.
+* Red team: 90 generated attackers in 5 rounds, plus attackers aimed at specific rules (rare bluffers, skewed solvers, style switchers). After the R4 fix, **none beat us**.
+* v7 pool result: 19.5/20 points, mean +3.38 bb/deal. The only draw is vs the previous solver; solver-vs-solver single matches swing about ±0.4 bb/deal from strategy randomness alone.
 * Solver vs solver: finer abstraction wins (K=20 > K=16 > K=8; K=24 didn't help). E[HS²] beat E[HS].
 * Timing: 3.4–3.7 s of 8 s with a CPU hog on our core (about 1.5 s normally). 0 errors. Startup is about 1.5 s.
 * Official smoke test passed on a read-only, non-root copy of the repo.
@@ -44,7 +46,10 @@ python lab/evaluate.py --cands hybridX solver --deals 1000 --seeds 2
 python lab/evaluate.py --cands hybridX --extra path/to/other/agent.py
 
 # red team: generate attackers and look for anything that beats us
-python lab/redteam.py --target hybridX --n 30 --seeds 2 --rseed 5
+python lab/redteam.py --target hybridX --n 30 --seeds 2 --rseed 9
+
+# tune the exploit settings (targets vs guards); champion -> lab/results/x_champion.json
+python lab/tune_x.py --cands 12 --rounds 2
 
 # timing under CPU contention with the official judge (Linux, needs taskset)
 bash lab/stress_time.sh 1000
